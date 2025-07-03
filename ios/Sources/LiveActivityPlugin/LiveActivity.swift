@@ -7,24 +7,28 @@ import Foundation
 
     override public init() {
         super.init()
+        Task {
+            await rediscoverActivities()
+            print("✅ Init complete. Active activities: \(activities.count)")
+        }
+    }
+    
+    private func rediscoverActivities() async {
+        for activity in Activity<GenericAttributes>.activities {
+            let id = activity.attributes.id
 
-            Task {
-                for activity in Activity<GenericAttributes>.activities {
-                    let id = activity.attributes.id
-
-                    switch activity.activityState {
-                    case .active, .stale:
-                        activities[id] = activity
-                    case .ended, .dismissed:
-                        // Keine Aktion: wird nicht übernommen = "Cleanup"
-                        print("🧹 Ignored ended activity: \(id)")
-                    @unknown default:
-                        print("⚠️ Unknown state for activity: \(id)")
-                    }
-                }
-
-                print("✅ Init complete. Active activities: \(activities.count)")
+            switch activity.activityState {
+            case .active, .stale:
+                activities[id] = activity
+                print("🔄 Rediscovered activity: \(id)")
+            case .ended, .dismissed:
+                // Remove from memory if it was there
+                activities.removeValue(forKey: id)
+                print("🧹 Ignored ended activity: \(id)")
+            @unknown default:
+                print("⚠️ Unknown state for activity: \(id)")
             }
+        }
     }
 
     @objc public func isAvailable() -> Bool {
@@ -42,23 +46,44 @@ import Foundation
     }
 
     @objc public func update(id: String, content: [String: String]) async {
-            if let activity = activities[id] {
-                let state = GenericAttributes.ContentState(values: content)
-                await activity.update(ActivityContent(state: state, staleDate: nil))
-            }
+        // If activity not in memory, try to rediscover it from iOS
+        if activities[id] == nil {
+            await rediscoverActivities()
+        }
+        
+        if let activity = activities[id] {
+            let state = GenericAttributes.ContentState(values: content)
+            await activity.update(ActivityContent(state: state, staleDate: nil))
+        } else {
+            print("❌ Failed to find activity for update: \(id)")
+        }
     }
 
     @objc public func end(id: String, content: [String: String]) async {
-            if let activity = activities[id] {
-                let state = GenericAttributes.ContentState(values: content)
-                await activity.end(
-                    ActivityContent(state: state, staleDate: nil), dismissalPolicy: .default)
-                activities.removeValue(forKey: id)
-            }
+        // If activity not in memory, try to rediscover it from iOS
+        if activities[id] == nil {
+            await rediscoverActivities()
+        }
+        
+        if let activity = activities[id] {
+            let state = GenericAttributes.ContentState(values: content)
+            await activity.end(
+                ActivityContent(state: state, staleDate: nil), dismissalPolicy: .default)
+            activities.removeValue(forKey: id)
+        } else {
+            print("❌ Failed to find activity for end: \(id)")
+        }
     }
 
     @objc public func isRunning(id: String) -> Bool {
-            return activities[id] != nil
+        // If activity not in memory, try to rediscover it from iOS
+        if activities[id] == nil {
+            Task {
+                await rediscoverActivities()
+            }
+        }
+        
+        return activities[id] != nil
     }
 
     @objc public func getCurrent(id: String?) -> [String: Any]? {
